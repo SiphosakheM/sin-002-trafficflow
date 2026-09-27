@@ -71,4 +71,18 @@ public final class FieldCleaner {
         String name = trimSpaces(value).toLowerCase(Locale.ROOT);
         return Character.toUpperCase(name.charAt(0)) + name.substring(1);
     }
+
+    /**
+     * Makes a signal type look the same every time.
+     * The old file writes "Roundabout", "ROUNDABOUT" and "roundabout" for the
+     * same thing, so we always use the lower case form.
+     * The word "unknown" is a missing value here, not a real signal type,
+     * because the old system used it when it had nothing to fill in.
+     */
+    public static String fixSignalTypeCasing(String value) {
+        if (isMissing(value)) {
+            return null;
+        }
+        return trimSpaces(value).toLowerCase(Locale.ROOT);
+    }
 }
