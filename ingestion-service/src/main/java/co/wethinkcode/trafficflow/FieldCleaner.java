@@ -45,4 +45,16 @@ public final class FieldCleaner {
         }
         return value.trim().replaceAll("\\s+", " ");
     }
+
+    /**
+     * Makes an intersection id look the same every time.
+     * The old file writes some ids as "int-1002" and some as "INT-1002".
+     * We always use the upper case form. A missing id becomes null.
+     */
+    public static String fixIdCasing(String value) {
+        if (isMissing(value)) {
+            return null;
+        }
+        return trimSpaces(value).toUpperCase(Locale.ROOT);
+    }
 }
