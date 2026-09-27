@@ -57,4 +57,18 @@ public final class FieldCleaner {
         }
         return trimSpaces(value).toUpperCase(Locale.ROOT);
     }
+
+    /**
+     * Makes a district name look the same every time.
+     * The old file writes "Downtown", "downtown" and "  downtown ".
+     * We always use the first letter upper case and the rest lower case.
+     * A missing district becomes null.
+     */
+    public static String fixDistrictCasing(String value) {
+        if (isMissing(value)) {
+            return null;
+        }
+        String name = trimSpaces(value).toLowerCase(Locale.ROOT);
+        return Character.toUpperCase(name.charAt(0)) + name.substring(1);
+    }
 }
