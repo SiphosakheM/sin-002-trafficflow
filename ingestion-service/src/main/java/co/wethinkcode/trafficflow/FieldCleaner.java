@@ -32,4 +32,17 @@ public final class FieldCleaner {
         }
         return PLACEHOLDERS.contains(cleaned);
     }
+
+    /**
+     * Removes the padding around a value.
+     * The old file has spaces at the start, at the end, and sometimes two
+     * spaces in the middle. We cut the value into words and join the words
+     * with one space, so all the extra space goes away.
+     */
+    public static String trimSpaces(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.trim().replaceAll("\\s+", " ");
+    }
 }
