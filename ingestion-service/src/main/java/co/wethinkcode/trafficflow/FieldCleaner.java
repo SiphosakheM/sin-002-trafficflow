@@ -85,4 +85,21 @@ public final class FieldCleaner {
         }
         return trimSpaces(value).toLowerCase(Locale.ROOT);
     }
+
+    /**
+     * Turns the old active flag into a real yes or no.
+     * The old file uses Y/N, yes/no, 1/0 and true/false for the same thing.
+     * If the value is missing, or it is a word we do not know, we return null
+     * instead of guessing.
+     */
+    public static Boolean parseActiveFlag(String value) {
+        if (isMissing(value)) {
+            return null;
+        }
+        return switch (trimSpaces(value).toLowerCase(Locale.ROOT)) {
+            case "y", "yes", "true", "1" -> Boolean.TRUE;
+            case "n", "no", "false", "0" -> Boolean.FALSE;
+            default -> null;
+        };
+    }
 }
