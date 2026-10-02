@@ -32,6 +32,14 @@
       <version>5.9</version>
     </dependency>
 
+    <!-- Javalin marks Jackson as optional, so we add it here ourselves.
+         Without it ctx.json() fails when we serve the clean records. -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.17.2</version>
+    </dependency>
+
     <!-- JUnit 5 is used to test the CSV cleaning rules. -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
