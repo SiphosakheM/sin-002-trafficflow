@@ -28,8 +28,11 @@ cleanup through synchronous REST calls to asynchronous MQ decoupling and alertin
 Plus [`common/`](common) (no port) — the shared ActiveMQ broker and MQ config notes
 for `congestion-topic`: Routing Service becomes aware of congestion changes via an ActiveMQ Topic instead of querying Congestion Service directly.
 
-**Status:** scaffold only — build files, Javalin bootstrap, and TODOs are in place; no
-business logic has been implemented yet.
+**Status:** Stage 1 is done and the first half of Stage 2 is done. Ingestion cleans
+the legacy CSV and serves it, the intersection service is the source of truth and
+reads ingestion over HTTP, and the congestion service tracks the 0-8 level. The
+routing service, the ActiveMQ topic and the watchdog are not built yet — see the
+table under "Your task".
 
 ## Your task
 
@@ -38,14 +41,24 @@ Stages 1-2 are the core exercise; stages 3-4 are stretch goals if you have time 
 Exact field names and response shapes are your call throughout — see
 "Integration contracts" below for illustrative shapes, not a spec to match exactly.
 
-| Stage | What | Required? | Rough effort |
-|---|---|---|---|
-| 1 | Clean `intersections-legacy.csv` in **IngestionServiceApp** and expose the cleaned records (see [`ingestion-service/README.md`](ingestion-service) for the specific data issues to handle) | Required | 1-2 hrs |
-| 2 | Implement the domain endpoints in **IntersectionServiceApp**, **CongestionServiceApp**, and **RoutingServiceApp**, wired together with direct synchronous REST calls | Required | 2-3 hrs |
-| 3 | Decouple Congestion → Routing with the `congestion-topic` ActiveMQ topic instead of a direct REST call (see [`common/README.md`](common)) | Stretch | 1 hr |
-| 4 | Add heartbeat/dead-letter alerting in **IntersectionWatchdogApp** so it notices when the Intersection Service goes down | Stretch | 1 hr |
+| Stage | What | Required? | Rough effort | Done? |
+|---|---|---|---|---|
+| 1 | Clean `intersections-legacy.csv` in **IngestionServiceApp** and expose the cleaned records (see [`ingestion-service/README.md`](ingestion-service) for the specific data issues to handle) | Required | 1-2 hrs | ✅ done |
+| 2 | Implement the domain endpoints in **IntersectionServiceApp**, **CongestionServiceApp**, and **RoutingServiceApp**, wired together with direct synchronous REST calls | Required | 2-3 hrs | 🟡 half done — intersection + congestion are built, routing is not |
+| 3 | Decouple Congestion → Routing with the `congestion-topic` ActiveMQ topic instead of a direct REST call (see [`common/README.md`](common)) | Stretch | 1 hr | not started |
+| 4 | Add heartbeat/dead-letter alerting in **IntersectionWatchdogApp** so it notices when the Intersection Service goes down | Stretch | 1 hr | not started |
 
-(Effort is a rough guide, not a hard budget — go with what feels right for your pace.)
+### What the services expose so far
+
+Full details are in each module's README.
+
+| Service | Endpoints |
+|---|---|
+| IngestionServiceApp (7020) | `/health`, `/intersections`, `/intersections/count`, `/intersections/{id}`, `/districts` |
+| IntersectionServiceApp (7021) | `/health`, `/status`, `/intersections`, `/intersections/count`, `/intersections/{id}`, `/intersections/{id}/check`, `/districts`, `/districts/{name}`, `POST /reload` |
+| CongestionServiceApp (7022) | `/health`, `/congestion`, `POST /congestion`, `POST /congestion/step`, `/congestion/history`, `POST /congestion/history/limit` |
+
+(Effort estimates above are a rough guide, not a hard budget.)
 
 ## Integration contracts
 
@@ -131,14 +144,34 @@ cd intersection-watchdog && mvn package && java -jar target/intersection-watchdo
 
 ## Test
 
-No automated tests exist yet (this is a scaffold). Each running service exposes
-`/health`, so sanity-check manually:
+Every module that has behaviour also has JUnit 5 tests. They run offline: the http
+tests start the real service on a free port and call it over real http, and the
+cross-service tests start a stand-in for the service being called. So the whole
+suite runs with no broker and no manual setup:
+
+```
+# one module
+cd congestion-service && mvn test
+
+# every module in the repo
+find . -name pom.xml -execdir mvn -q test \;
+```
+
+| Module | Tests |
+|---|---|
+| `ingestion-service` | 101 |
+| `intersection-service` | 69 |
+| `congestion-service` | 74 |
+
+Each running service exposes `/health`, so you can also sanity-check by hand:
 
 ```
 curl http://localhost:7020/health   # -> OK
+curl http://localhost:7021/status   # -> {"count":17,...,"state":"READY"}
+curl http://localhost:7022/congestion   # -> {"level":0,"label":"Clear","busy":false}
 ```
 
-To add real tests to a module, add JUnit 5 and Surefire to its `pom.xml`:
+New modules still need JUnit 5 and Surefire added to their `pom.xml`:
 
 ```xml
 <dependency>
@@ -157,8 +190,4 @@ To add real tests to a module, add JUnit 5 and Surefire to its `pom.xml`:
 </plugin>
 ```
 
-then add tests under that module's `src/test/java/...` and run:
-
-```
-mvn test
-```
+then add tests under that module's `src/test/java/...` and run `mvn test`.
