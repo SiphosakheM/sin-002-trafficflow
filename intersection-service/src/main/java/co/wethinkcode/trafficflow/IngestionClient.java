@@ -17,7 +17,7 @@ import java.util.List;
  * The ingestion service is the one that cleans the old csv file, so we ask it
  * for the records instead of reading the csv ourselves.
  */
-public class IngestionClient {
+public class IngestionClient implements IntersectionFeed {
 
     // How long we wait for the ingestion service before we give up.
     private static final Duration TIMEOUT = Duration.ofSeconds(5);
