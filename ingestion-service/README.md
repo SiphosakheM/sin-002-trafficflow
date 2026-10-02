@@ -66,14 +66,64 @@ What happened:
   than dropped or guessed, so downstream services can see it's missing.
 - `INT-1015`: same idea for a missing district.
 
+## Cleaning rules
+
+| Rule | What it does | Example |
+|---|---|---|
+| `trimSpaces` | Removes padding and double spaces | `"  Downtown  "` → `"Downtown"` |
+| `fixIdCasing` | Always upper case | `int-1002` → `INT-1002` |
+| `fixDistrictCasing` | First letter upper case, rest lower case | `downtown` → `Downtown` |
+| `fixSignalTypeCasing` | Always lower case | `ROUNDABOUT` → `roundabout` |
+| `parseActiveFlag` | `Y`/`yes`/`1`/`true` → `true`, `N`/`no`/`0`/`false` → `false` | `YES` → `true` |
+| `isMissing` | Spots `N/A`, `TBD`, `unknown`, `-`, `NaN`, blanks | `unknown` → `null` |
+| `Dedupe` | Joins rows with the same id, keeps the first | `INT-1005` + `int-1005` → one row |
+
+Missing values become `null` and stay in the output — nothing is dropped and
+nothing is guessed. `unknown` is treated as a missing value, including in the
+signal type column.
+
+The file has 18 data rows and gives **17** clean records, because `INT-1005` is
+written twice.
+
+## Endpoints
+
+| Method | Path | Answers |
+|---|---|---|
+| `GET` | `/health` | `OK` |
+| `GET` | `/intersections` | JSON array of all clean records |
+| `GET` | `/intersections/count` | How many records, e.g. `17` |
+| `GET` | `/intersections/{id}` | One record, or `404` if the id is unknown |
+| `GET` | `/districts` | JSON array of district names, each one once |
+
+Record shape:
+
+```json
+{ "id": "INT-1001", "district": "Downtown", "signalType": "4-way", "active": true }
+```
+
+`district`, `signalType` and `active` can be `null` when the old file had no
+real value there.
+
+The csv file is read and cleaned **once at start up** and kept in memory, so
+requests are fast. Restart the service to pick up changes to the csv file.
+
 ## Project structure
 
 ```
 ingestion-service/
 ├── pom.xml
-└── src/main/
-    ├── java/co/wethinkcode/trafficflow/IngestionServiceApp.java
-    └── resources/intersections-legacy.csv
+└── src/
+    ├── main/
+    │   ├── java/co/wethinkcode/trafficflow/
+    │   │   ├── IngestionServiceApp.java    (the http service)
+    │   │   ├── IntersectionStore.java      (keeps the clean records in memory)
+    │   │   ├── IntersectionCleaner.java    (runs all the cleaning steps)
+    │   │   ├── CsvReader.java              (reads the csv rows)
+    │   │   ├── Dedupe.java                 (joins duplicate rows)
+    │   │   ├── FieldCleaner.java           (one method per cleaning rule)
+    │   │   └── Intersection.java           (the record shape)
+    │   └── resources/intersections-legacy.csv
+    └── test/java/co/wethinkcode/trafficflow/   (101 tests)
 ```
 
 ## Build
@@ -88,16 +138,14 @@ mvn package
 java -jar target/ingestion-service.jar
 ```
 
-Listens on port `7020`. Currently just exposes `/health` — the actual CSV
-parsing/cleaning logic is a TODO.
+Listens on port `7020`.
 
 ## Test
 
-No automated tests yet. Manually verify it's up:
-
 ```
-curl http://localhost:7020/health   # -> OK
+mvn test
 ```
 
-To add real tests, add JUnit 5 + the Surefire plugin to `pom.xml`, put tests under
-`src/test/java/co/wethinkcode/trafficflow/`, and run `mvn test`.
+101 tests. The cleaning rules are tested one by one, the whole pipeline is
+tested against the real `intersections-legacy.csv`, and the endpoints are
+tested by starting the real service on a free port and calling it over http.
