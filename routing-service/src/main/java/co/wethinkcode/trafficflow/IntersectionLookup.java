@@ -16,4 +16,9 @@ public interface IntersectionLookup {
      *         not be reached or did not answer in a way we understand.
      */
     IntersectionCheck check(String id) throws IntersectionLookupUnavailable;
+
+    /**
+     * A quick "is the intersection service there?" for the readiness answer.
+     */
+    boolean isReachable();
 }
