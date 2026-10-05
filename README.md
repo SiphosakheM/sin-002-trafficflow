@@ -28,11 +28,13 @@ cleanup through synchronous REST calls to asynchronous MQ decoupling and alertin
 Plus [`common/`](common) (no port) — the shared ActiveMQ broker and MQ config notes
 for `congestion-topic`: Routing Service becomes aware of congestion changes via an ActiveMQ Topic instead of querying Congestion Service directly.
 
-**Status:** Stage 1 is done and the first half of Stage 2 is done. Ingestion cleans
-the legacy CSV and serves it, the intersection service is the source of truth and
-reads ingestion over HTTP, and the congestion service tracks the 0-8 level. The
-routing service, the ActiveMQ topic and the watchdog are not built yet — see the
-table under "Your task".
+**Status:** Stage 1 is done, and Stage 2 is done — all four REST services are
+built and wired together with direct synchronous calls. Ingestion cleans the
+legacy CSV and serves it, the intersection service is the source of truth and
+reads ingestion over HTTP, the congestion service tracks the 0-8 level, and the
+routing service validates a route against both and estimates the travel time.
+The ActiveMQ topic and the watchdog are not built yet — see the table under
+"Your task".
 
 ## Your task
 
@@ -44,8 +46,8 @@ Exact field names and response shapes are your call throughout — see
 | Stage | What | Required? | Rough effort | Done? |
 |---|---|---|---|---|
 | 1 | Clean `intersections-legacy.csv` in **IngestionServiceApp** and expose the cleaned records (see [`ingestion-service/README.md`](ingestion-service) for the specific data issues to handle) | Required | 1-2 hrs | ✅ done |
-| 2 | Implement the domain endpoints in **IntersectionServiceApp**, **CongestionServiceApp**, and **RoutingServiceApp**, wired together with direct synchronous REST calls | Required | 2-3 hrs | 🟡 half done — intersection + congestion are built, routing is not |
-| 3 | Decouple Congestion → Routing with the `congestion-topic` ActiveMQ topic instead of a direct REST call (see [`common/README.md`](common)) | Stretch | 1 hr | not started |
+| 2 | Implement the domain endpoints in **IntersectionServiceApp**, **CongestionServiceApp**, and **RoutingServiceApp**, wired together with direct synchronous REST calls | Required | 2-3 hrs | ✅ done |
+| 3 | Decouple Congestion → Routing with the `congestion-topic` ActiveMQ topic instead of a direct REST call (see [`common/README.md`](common)) | Stretch | 1 hr | not started — `CongestionLookup` is an interface, ready for the swap |
 | 4 | Add heartbeat/dead-letter alerting in **IntersectionWatchdogApp** so it notices when the Intersection Service goes down | Stretch | 1 hr | not started |
 
 ### What the services expose so far
@@ -57,6 +59,15 @@ Full details are in each module's README.
 | IngestionServiceApp (7020) | `/health`, `/intersections`, `/intersections/count`, `/intersections/{id}`, `/districts` |
 | IntersectionServiceApp (7021) | `/health`, `/status`, `/intersections`, `/intersections/count`, `/intersections/{id}`, `/intersections/{id}/check`, `/districts`, `/districts/{name}`, `POST /reload` |
 | CongestionServiceApp (7022) | `/health`, `/congestion`, `POST /congestion`, `POST /congestion/step`, `/congestion/history`, `POST /congestion/history/limit` |
+| RoutingServiceApp (7023) | `/health`, `/status`, `POST /route` |
+
+An estimated travel time, which is the whole point of stage 2:
+
+```bash
+curl -X POST localhost:7023/route -H 'Content-Type: application/json' \
+  -d '{"from":"INT-1001","to":"INT-1005","distanceKm":10}'
+# -> 15 minutes at congestion level 0, and 46 minutes at level 8
+```
 
 (Effort estimates above are a rough guide, not a hard budget.)
 
@@ -162,6 +173,7 @@ find . -name pom.xml -execdir mvn -q test \;
 | `ingestion-service` | 101 |
 | `intersection-service` | 69 |
 | `congestion-service` | 74 |
+| `routing-service` | 86 |
 
 Each running service exposes `/health`, so you can also sanity-check by hand:
 
@@ -169,6 +181,7 @@ Each running service exposes `/health`, so you can also sanity-check by hand:
 curl http://localhost:7020/health   # -> OK
 curl http://localhost:7021/status   # -> {"count":17,...,"state":"READY"}
 curl http://localhost:7022/congestion   # -> {"level":0,"label":"Clear","busy":false}
+curl http://localhost:7023/status   # -> {"state":"READY",...}
 ```
 
 New modules still need JUnit 5 and Surefire added to their `pom.xml`:
