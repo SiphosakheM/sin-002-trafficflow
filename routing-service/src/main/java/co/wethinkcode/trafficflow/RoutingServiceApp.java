@@ -1,5 +1,7 @@
 package co.wethinkcode.trafficflow;
 
+import co.wethinkcode.trafficflow.mq.MessagingUnavailable;
+import co.wethinkcode.trafficflow.mq.MqConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.Javalin;
 import io.javalin.http.Context;
@@ -17,8 +19,13 @@ import java.util.Map;
  * congestion service how bad the traffic is, and turns those two answers into
  * an estimated travel time.
  *
- * It never caches either answer. Congestion changes and intersections come and
- * go, and a stale number here is a wrong number in somebody's satnav.
+ * The congestion level comes from a subscription to the topic rather than from
+ * http, because the congestion service now publishes every change and routing
+ * can hear about it without asking. Routing therefore keeps one value between
+ * requests: the last level the topic told it. That is a departure from the rule
+ * it had before, that nothing here is cached. Intersections are still asked for
+ * fresh on every request, because they come and go and a stale one is a wrong
+ * number in somebody's satnav.
  */
 public class RoutingServiceApp {
 
@@ -31,9 +38,50 @@ public class RoutingServiceApp {
     public static void main(String[] args) {
         ObjectMapper json = new ObjectMapper();
         IntersectionLookup intersections = new IntersectionClient(INTERSECTION_URL, json);
-        CongestionLookup congestion = new CongestionClient(CONGESTION_URL, json);
 
-        createApp(intersections, congestion, json).start(PORT);
+        // Congestion comes from the topic. The subscription is started here
+        // rather than inside createApp so the tests can keep injecting fakes.
+        TopicCongestionLookup congestion = new TopicCongestionLookup(json);
+        try {
+            congestion.start(MqConfig.BROKER_URL);
+        } catch (MessagingUnavailable e) {
+            // Without the topic the service still runs; it just has no level to
+            // work with until the seed below supplies one.
+            log.warn("Could not subscribe to {}: {}", MqConfig.TOPIC, e.getMessage());
+        }
+        seedIfUnknown(congestion, new CongestionClient(CONGESTION_URL, json));
+
+        Javalin app = createApp(intersections, congestion, json);
+        Runtime.getRuntime().addShutdownHook(new Thread(congestion::close));
+        app.start(PORT);
+    }
+
+    /**
+     * Gives routing its first congestion level, if the topic has not produced
+     * one yet.
+     *
+     * A topic only announces changes, and on a quiet network the level sits at
+     * 0 with nothing to say. Rather than assume 0 means clear roads, routing
+     * asks the congestion service once. This runs at startup and never again, so
+     * routing still does not poll — after this the topic is the only source.
+     *
+     * @param lookup   where routing reads the level from
+     * @param fallback the congestion service over http, used only if needed
+     */
+    public static void seedIfUnknown(TopicCongestionLookup lookup, CongestionLookup fallback) {
+        if (lookup.isReachable()) {
+            return;
+        }
+
+        try {
+            CongestionReading first = fallback.read();
+            lookup.seed(first);
+            log.info("Seeded the congestion level at {} from {}, now following the topic",
+                    first.level(), CONGESTION_URL);
+        } catch (CongestionLookupUnavailable e) {
+            log.warn("No congestion level yet and the congestion service is no help: {}. "
+                    + "Route requests will answer 503 until the topic speaks.", e.getMessage());
+        }
     }
 
     /**

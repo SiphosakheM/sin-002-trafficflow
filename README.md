@@ -28,13 +28,15 @@ cleanup through synchronous REST calls to asynchronous MQ decoupling and alertin
 Plus [`common/`](common) (no port) — the shared ActiveMQ broker and MQ config notes
 for `congestion-topic`: Routing Service becomes aware of congestion changes via an ActiveMQ Topic instead of querying Congestion Service directly.
 
-**Status:** Stage 1 is done, and Stage 2 is done — all four REST services are
-built and wired together with direct synchronous calls. Ingestion cleans the
-legacy CSV and serves it, the intersection service is the source of truth and
-reads ingestion over HTTP, the congestion service tracks the 0-8 level, and the
-routing service validates a route against both and estimates the travel time.
-The ActiveMQ topic and the watchdog are not built yet — see the table under
-"Your task".
+**Status:** Stage 1, Stage 2 and Stage 3 are done. Ingestion cleans the legacy
+CSV and serves it, the intersection service is the source of truth and reads
+ingestion over HTTP, the congestion service tracks the 0-8 level, and the routing
+service validates a route against both and estimates the travel time.
+
+The congestion → routing link now runs over the ActiveMQ `congestion-topic`
+rather than a direct REST call: congestion publishes `{"level": n}` on every
+change, and routing subscribes to it instead of polling. Only the watchdog
+(stage 4) is left — see the table under "Your task".
 
 ## Your task
 
@@ -47,7 +49,7 @@ Exact field names and response shapes are your call throughout — see
 |---|---|---|---|---|
 | 1 | Clean `intersections-legacy.csv` in **IngestionServiceApp** and expose the cleaned records (see [`ingestion-service/README.md`](ingestion-service) for the specific data issues to handle) | Required | 1-2 hrs | ✅ done |
 | 2 | Implement the domain endpoints in **IntersectionServiceApp**, **CongestionServiceApp**, and **RoutingServiceApp**, wired together with direct synchronous REST calls | Required | 2-3 hrs | ✅ done |
-| 3 | Decouple Congestion → Routing with the `congestion-topic` ActiveMQ topic instead of a direct REST call (see [`common/README.md`](common)) | Stretch | 1 hr | not started — `CongestionLookup` is an interface, ready for the swap |
+| 3 | Decouple Congestion → Routing with the `congestion-topic` ActiveMQ topic instead of a direct REST call (see [`common/README.md`](common)) | Stretch | 1 hr | ✅ done — congestion publishes on every level change, routing subscribes |
 | 4 | Add heartbeat/dead-letter alerting in **IntersectionWatchdogApp** so it notices when the Intersection Service goes down | Stretch | 1 hr | not started |
 
 ### What the services expose so far
@@ -80,8 +82,8 @@ None of these field names are binding — match the intent, not the exact JSON.
 |---|---|---|---|
 | ingestion-service → intersection-service | 1 | REST, `GET` | `GET /intersections` on ingestion-service (port 7020) → `200 OK` + JSON array of cleaned records, e.g. `[{"id": "INT-1001", "district": "Downtown", "signalType": "4-way", "active": true}, ...]`. intersection-service loads this as its canonical list. |
 | routing-service → intersection-service | 2 | REST, `GET` | `GET /intersections/{id}` on intersection-service (port 7021) → `200 OK` with the record, or `404` if the id/district isn't recognized. routing-service calls this to validate a route's endpoints before estimating travel time. |
-| routing-service → congestion-service | 2 | REST, `GET` | `GET /congestion` on congestion-service (port 7022) → `200 OK` + `{"level": 0-8}`. routing-service polls this per-request in stage 2. |
-| congestion-service → routing-service | 3 | ActiveMQ Topic `congestion-topic` | Once stage 3 is in place, congestion-service publishes `{"level": 0-8}` to `congestion-topic` whenever the level changes, and routing-service subscribes instead of polling `GET /congestion`. Broker URL + topic name come from the shared `MqConfig` class — see [`common/README.md`](common). |
+| routing-service → congestion-service | 2 | REST, `GET` | `GET /congestion` on congestion-service (port 7022) → `200 OK` + `{"level": 0-8}`. Used **once at routing's startup** to seed the level before the topic has spoken; after that routing no longer polls. |
+| congestion-service → routing-service | 3 | ActiveMQ Topic `congestion-topic` | congestion-service publishes `{"level": 0-8}` to `congestion-topic` whenever the level changes, and routing-service subscribes instead of polling `GET /congestion`. Broker URL + topic name come from the shared `MqConfig` class — see [`common/README.md`](common). |
 | intersection-service → intersection-watchdog | 4 | ActiveMQ Queue `intersection-heartbeat-queue` | intersection-service publishes a periodic heartbeat message to `intersection-heartbeat-queue`; intersection-watchdog consumes it and raises an alert (e.g. logs, or its own `/alert` state) if a heartbeat is missed or lands in the dead-letter queue. Queue name comes from the shared `MqConfig` class, same pattern as `congestion-topic` — see [`intersection-watchdog/README.md`](intersection-watchdog). |
 
 ## Project structure

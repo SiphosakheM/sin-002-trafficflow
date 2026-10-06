@@ -12,10 +12,16 @@ service (port 7021) whether both ends of a route can be driven, asks the
 congestion service (port 7022) how bad the traffic is, and turns those answers
 into a travel time.
 
-MQ: in stage 3 this service subscribes to the ActiveMQ topic `congestion-topic`
-instead of polling — see [`../common/`](../common). Broker URL and topic name come
-from the common `co.wethinkcode.trafficflow.mq.MqConfig` class alongside it in
-this module.
+**MQ (stage 3): this service subscribes to the ActiveMQ topic `congestion-topic`
+instead of polling the congestion service** — see [`../common/`](../common). Broker
+URL and topic name come from the common `co.wethinkcode.trafficflow.mq.MqConfig`
+class alongside it in this module. The congestion service publishes every level
+change; this service hears about it and keeps the latest one.
+
+It still asks the *intersection* service over http on every request. Intersections
+come and go, so a cached one would be a wrong answer in somebody's satnav. The
+congestion level is different: it changes rarely and is a number, so the last one
+we were told is the right one to use.
 
 ## Endpoints
 
@@ -91,7 +97,7 @@ be able to see what was assumed.
 | An intersection the city has never heard of | `404` | The route does not exist |
 | An intersection that is switched off | `422` | Understood, but the road cannot be used |
 | The intersection service is down | `503` | Not this service's fault |
-| The congestion service is down | `503` | Not this service's fault |
+| No congestion level known yet | `503` | The topic has not spoken and there was nothing to seed from |
 
 `404` and `422` are split on purpose. `404` means "I have no such intersection,
 check the spelling". `422` means "I know that intersection and I cannot send a
@@ -107,10 +113,47 @@ where the truth about the dependencies is.
 
 ## Stage 3 — swapping polling for a topic
 
-`CongestionLookup` is an interface, and `CongestionClient` is just the http
-implementation of it. In stage 3 an ActiveMQ subscriber becomes the other
-implementation and `CongestionClient` can go. Nothing in the estimator or the
-endpoints has to change, because they never knew where the level came from.
+`CongestionLookup` is an interface, and `CongestionClient` was the http
+implementation of it. `TopicCongestionLookup` is now the one the service actually
+uses, and `CongestionClient` survives only to fill one gap at startup. Nothing in
+the estimator or the endpoints changed, because they never knew where the level
+came from.
+
+### What it does
+
+Subscribes to `congestion-topic`, keeps the last level it heard, and answers
+`read()` from that. `isReachable()` is false until the first message arrives.
+
+### The one honest trade-off
+
+A topic only speaks when something changes, and the level starts at 0 with no
+change to announce. So a subscription, unlike `GET /congestion`, has no answer
+ready at the very beginning.
+
+Assuming level 0 would be the wrong fix — it would hand optimistic travel times
+to every caller while routing genuinely did not know. Instead, at startup routing
+asks the congestion service **once** to seed the level, and after that the topic is
+the only source. One fetch at start is not polling; polling is asking again and
+again.
+
+If that one fetch fails too, `/status` says `DEGRADED`, route requests answer
+`503`, and routing recovers by itself the moment the congestion service publishes
+any level change. That is not a hoped-for behaviour — it is what the live run
+showed: routing started before congestion was up, reported `DEGRADED`, and went to
+`READY` when level 8 was set, without a single http call afterwards.
+
+### The connection id
+
+The subscription is durable, so a broker blip does not lose the changes published
+while routing was reconnecting. That needs a connection id, and the broker will not
+let two connections share one — so a second copy of this service must ask for its
+own with `-Dtrafficflow.clientId=...`. The id has to stay the same across restarts,
+or every restart leaves the old durable subscription behind on the broker.
+
+### What did not change
+
+`CongestionLookup`, `CongestionReading`, `CongestionLookupUnavailable`, the
+estimator, and every endpoint. The swap was one constructor argument in `main`.
 
 ## Project structure
 
@@ -127,13 +170,18 @@ routing-service/
     │   ├── IntersectionClient.java    (...over http, port 7021)
     │   ├── IntersectionCheck.java     (what we were told)
     │   ├── CongestionLookup.java      (read the level)
-    │   ├── CongestionClient.java      (...over http, port 7022)
+    │   ├── CongestionClient.java      (...over http, port 7022, seed only)
+    │   ├── TopicCongestionLookup.java (...from the ActiveMQ topic)
     │   ├── CongestionReading.java     (the level, with its word)
     │   ├── BadRouteRequestException.java
     │   ├── IntersectionLookupUnavailable.java
     │   ├── CongestionLookupUnavailable.java
-    │   └── IntersectionLookupUnknown.java
-    └── test/java/co/wethinkcode/trafficflow/   (86 tests)
+    │   ├── IntersectionLookupUnknown.java
+    │   └── mq/
+    │       ├── MqConfig.java               (broker url and topic name)
+    │       ├── CongestionMessage.java      ({"level":n} on the wire)
+    │       └── MessagingUnavailable.java   (what a failed subscribe throws)
+    └── test/java/co/wethinkcode/trafficflow/   (113 tests)
 ```
 
 ## Build
@@ -148,8 +196,15 @@ mvn package
 java -jar target/routing-service.jar
 ```
 
-Listens on port `7023`. It needs the intersection service on 7021 and the
-congestion service on 7022 to be running, or every route comes back `503`.
+Listens on port `7023`. It needs the ActiveMQ broker from
+[`../common/`](../common) on 61616, the intersection service on 7021, and the
+congestion service on 7022 — or every route comes back `503`.
+
+Start the broker first:
+
+```bash
+docker compose -f common/docker-compose.yml up -d
+```
 
 ## Test
 
@@ -157,16 +212,27 @@ congestion service on 7022 to be running, or every route comes back `503`.
 mvn test
 ```
 
-86 tests, and they need nothing else running. The http tests start the real
-service on a free port. `RoutingServiceOverHttpTest` is the closest thing to a
-full run: it uses the real `IntersectionClient` and `CongestionClient` over real
-http, with stand-ins for the other two services answering the json the real ones
-send. It checks every congestion level gives a different time, which is what
+113 tests, and they need nothing else running — the ones that need a broker skip
+themselves rather than fail when there is none, so the suite still passes on a
+machine with nothing installed.
+
+The http tests start the real service on a free port. `RoutingServiceOverHttpTest`
+is the closest thing to a full run: it uses the real `IntersectionClient` over
+real http, with stand-ins for the other two services answering the json the real
+ones send. It checks every congestion level gives a different time, which is what
 stops the estimate from quietly becoming a hardcoded number.
+
+The stage 3 tests are in three places: `TopicCongestionLookupTest` checks how a
+message becomes an answer (including what to do before any message has arrived),
+`SeedingTheLevelTest` checks the startup fetch happens once and only when needed,
+and `TopicCongestionLookupOverBrokerTest` puts real messages on a real topic and
+checks routing hears them.
 
 ## How to check my work
 
 ```bash
+# terminal 0 — the broker, before anything else
+docker compose -f common/docker-compose.yml up -d
 # terminal 1
 cd ingestion-service    && mvn -q package && java -jar target/ingestion-service.jar
 # terminal 2
@@ -186,4 +252,8 @@ curl -X POST localhost:7022/congestion -H 'Content-Type: application/json' -d '{
 curl -X POST localhost:7023/route -H 'Content-Type: application/json' \
   -d '{"from":"INT-1001","to":"INT-1005","distanceKm":10}'
 # minutes goes from 15 to 46
+
+# and to see that routing is hearing the topic and not polling:
+# watch routing-service's log — there is no request to /congestion in it
+grep -c "7022" <routing log>   # one line, the startup seed, and never again
 ```

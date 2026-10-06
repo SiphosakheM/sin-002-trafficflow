@@ -37,11 +37,19 @@ common/
 └── README.md
 ```
 
-This folder holds the broker config and notes only — the actual publish/subscribe
-code belongs in the producer/consumer services listed above (their poms already
-depend on `activemq-client`, and each already has its own
-`src/main/java/co/wethinkcode/trafficflow/mq/MqConfig.java` with the constants for
-whichever topic/queue that service participates in).
+This folder holds the broker config and notes only. The publish/subscribe code
+lives in the services listed above, each with its own
+`src/main/java/co/wethinkcode/trafficflow/mq/MqConfig.java` carrying `BROKER_URL`
+and `TOPIC` — the constants are duplicated per module because these are separate
+Maven projects with no shared parent, and a shared jar would be a dependency
+between services that are meant to be independent.
+
+**Stage 3 is implemented:**
+
+- `congestion-service` publishes `{"level": n}` to `congestion-topic` on every
+  level change (`mq/CongestionPublisher` → `mq/ActiveMqSender`).
+- `routing-service` subscribes to the same topic and keeps the last level
+  (`TopicCongestionLookup`), instead of polling `GET /congestion`.
 
 ## Build
 
@@ -66,14 +74,24 @@ from their own directories at the project root).
 docker compose ps          # confirm the broker container is healthy
 ```
 
-Once the TODOs below are implemented, verify end-to-end by publishing a message from
-`congestion-service` and confirming the consumer(s) receive it — e.g. via logs, or by
-watching the topic in the web console.
+Verify end-to-end by changing the congestion level and confirming routing follows
+it — no http call to 7022 appears in routing's log after the startup seed:
+
+```bash
+curl -X POST localhost:7022/congestion -H 'Content-Type: application/json' -d '{"level":8}'
+sleep 2
+curl -X POST localhost:7023/route -H 'Content-Type: application/json' \
+  -d '{"from":"INT-1001","to":"INT-1004","distanceKm":10}'
+# minutes: 15 -> 46
+```
+
+The web console (http://localhost:8161) shows the topic with its subscribers, if
+you want to see the message rather than its effect.
 
 ## TODO
 
-- Add `activemq-client` publish logic to `congestion-service` on its stage/state-change endpoint.
-- Add `activemq-client` subscriber logic to consumer service(s) above, replacing any
+- [x] Add `activemq-client` publish logic to `congestion-service` on its stage/state-change endpoint.
+- [x] Add `activemq-client` subscriber logic to consumer service(s) above, replacing any
   direct synchronous calls to `congestion-service`.
-- Add `activemq-client` heartbeat-publish logic to `intersection-service`.
-- Add `activemq-client` subscriber/alerting logic to `intersection-watchdog`.
+- [ ] Add `activemq-client` heartbeat-publish logic to `intersection-service` *(stage 4)*.
+- [ ] Add `activemq-client` subscriber/alerting logic to `intersection-watchdog` *(stage 4)*.
