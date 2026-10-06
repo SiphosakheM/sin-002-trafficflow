@@ -1,5 +1,9 @@
 package co.wethinkcode.trafficflow;
 
+import co.wethinkcode.trafficflow.mq.ActiveMqSender;
+import co.wethinkcode.trafficflow.mq.CongestionPublisher;
+import co.wethinkcode.trafficflow.mq.MqConfig;
+import co.wethinkcode.trafficflow.mq.MessagingUnavailable;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.Javalin;
@@ -7,8 +11,11 @@ import io.javalin.http.Context;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
 
 /**
  * The congestion service on port 7022.
@@ -32,7 +39,61 @@ public class CongestionServiceApp {
         tracker.historyLimit(DEFAULT_HISTORY_LIMIT);
         log.info("Congestion service starting at level {}", tracker.currentLevel());
 
-        createApp(tracker).start(PORT);
+        // The service publishes every level change to the topic, so routing can
+        // hear about it without asking us over http.
+        CongestionPublisher publisher = new CongestionPublisher(
+                new ActiveMqSender(MqConfig.BROKER_URL), json);
+
+        createApp(tracker, publisher).start(PORT);
+    }
+
+    /**
+     * Builds the service and wires the publisher into every level change.
+     *
+     * This is the production path. The tests can pass their own publisher in
+     * and never touch a broker.
+     */
+    public static Javalin createApp(CongestionTracker tracker, CongestionPublisher publisher) {
+        wireTopicPublishing(tracker, publisher);
+        return createApp(tracker);
+    }
+
+    /**
+     * Trackers we have already put a publishing listener on.
+     *
+     * The set is weak, so a tracker that nothing else holds can still be
+     * collected. This exists so wiring is safe to call more than once — wiring
+     * twice would put two listeners on, and one level change would then send
+     * two identical messages to the topic.
+     */
+    private static final Set<CongestionTracker> alreadyWired =
+            Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
+
+    /**
+     * Connects a level change to a message on the congestion topic.
+     *
+     * This is the whole of stage 3 from this side. The tracker does not know
+     * about message queues and the publisher does not know about levels; this
+     * is the only place the two meet.
+     *
+     * Safe to call twice for the same tracker. If the broker is down the
+     * publisher's failure is logged and swallowed, because the level has
+     * already changed by then and that part is not undone by a message failing.
+     */
+    public static void wireTopicPublishing(CongestionTracker tracker, CongestionPublisher publisher) {
+        if (!alreadyWired.add(tracker)) {
+            return;
+        }
+
+        tracker.onChange((newLevel, oldLevel) -> {
+            try {
+                publisher.publish(newLevel.value());
+            } catch (MessagingUnavailable e) {
+                // The level change has happened and cannot be un-sent here, so
+                // the best we can do is make the loss loud in the log.
+                log.error("Could not publish the new level {}: {}", newLevel.value(), e.getMessage());
+            }
+        });
     }
 
     /**

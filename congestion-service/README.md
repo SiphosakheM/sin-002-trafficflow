@@ -22,8 +22,18 @@ MQ: this service publishes to the ActiveMQ topic `congestion-topic` — see [`..
 | `GET` | `/congestion/history` | | Array of changes, newest first |
 | `POST` | `/congestion/history/limit` | `{"limit":20}` | `{"limit":20,"kept":20}`, or `400` |
 
-The routing service reads `GET /congestion` in stage 2, and in stage 3 it gets the
-same `{"level": n}` pushed to it over ActiveMQ instead.
+The routing service read `GET /congestion` in stage 2. In stage 3 it gets the same
+`{"level": n}` pushed to it over ActiveMQ instead, so routing asks nothing of this
+service once it has subscribed.
+
+**Every level change is published.** Not every request — setting the level to what
+it already was publishes nothing, because nothing changed. The payload is exactly
+`{"level":5}` plus a `label`, so a subscriber can read the level without knowing
+anything else about this service.
+
+If the broker is down the level change still happens. The failure is logged and
+swallowed rather than thrown, because by then the change has already been made and
+cannot be un-made; the message that was lost is lost either way.
 
 `label` is a word for the level, so answers and logs are easy to read:
 
@@ -58,11 +68,19 @@ a word for it, why it changed, and when:
 It holds 100 entries by default. Without a limit it would grow for as long as the
 service runs, so the limit can be changed with `POST /congestion/history/limit`.
 
-## Listeners — the hook for stage 3
+## Listeners — how the message gets published
 
 `CongestionTracker.onChange(...)` registers a listener that is called whenever the
-level actually changes. In stage 3 the ActiveMQ publisher is one of those
-listeners, so this class does not need to know anything about message queues.
+level actually changes. The ActiveMQ publisher is one of those listeners, wired in
+`CongestionServiceApp.wireTopicPublishing(...)`.
+
+That is the whole of stage 3 from this side: the tracker knows nothing about
+message queues, the publisher knows nothing about levels, and one method is the
+only place the two meet.
+
+Wiring is safe to call twice. Two listeners on one tracker would mean two
+identical messages for one change, so the app remembers which trackers it has
+already wired.
 
 Two details the tests pin down:
 
@@ -90,8 +108,14 @@ congestion-service/
     │   ├── CongestionLevel.java       (the 0-8 value, refuses anything else)
     │   ├── CongestionChange.java      (one history entry)
     │   ├── CongestionListener.java    (told when the level changes)
-    │   └── mq/MqConfig.java
-    └── test/java/co/wethinkcode/trafficflow/   (74 tests)
+    │   └── mq/
+    │       ├── MqConfig.java              (broker url and topic name)
+    │       ├── CongestionMessage.java     ({"level":n} on the wire)
+    │       ├── CongestionPublisher.java   (level change -> message)
+    │       ├── MessageSender.java         (the sending seam)
+    │       ├── ActiveMqSender.java        (the real ActiveMQ sender)
+    │       └── MessagingUnavailable.java  (what a failed send throws)
+    └── test/java/co/wethinkcode/trafficflow/   (125 tests)
 ```
 
 ## Build
@@ -114,6 +138,10 @@ Listens on port `7022`. It starts at level 0 and needs nothing else running.
 mvn test
 ```
 
-74 tests. The level rules and the tracker are tested on their own, and the
+125 tests. The level rules and the tracker are tested on their own, and the
 endpoints are tested by starting this real service on a free port and calling it
 over http.
+
+The publisher has tests that need no broker at all, plus broker tests that are
+skipped rather than failed when no broker is running. The broker tests take about
+three seconds, which is how long a real round trip to ActiveMQ takes.
