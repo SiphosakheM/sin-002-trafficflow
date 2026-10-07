@@ -1,5 +1,6 @@
 package co.wethinkcode.trafficflow;
 
+import co.wethinkcode.trafficflow.mq.HeartbeatScheduler;
 import io.javalin.Javalin;
 import io.javalin.http.Context;
 import org.slf4j.Logger;
@@ -26,7 +27,12 @@ public class IntersectionServiceApp {
         catalogue.refresh();
         logStatus(catalogue);
 
-        createApp(catalogue).start(PORT);
+        HeartbeatScheduler heartbeat = HeartbeatScheduler.createDefault();
+        heartbeat.start();
+
+        Javalin app = createApp(catalogue);
+        Runtime.getRuntime().addShutdownHook(new Thread(heartbeat::close));
+        app.start(PORT);
     }
 
     /**
