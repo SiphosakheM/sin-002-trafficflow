@@ -14,15 +14,25 @@ public class IntersectionWatchdogApp {
 
     public static void main(String[] args) {
         WatchdogState state = new WatchdogState();
-        HeartbeatConsumer consumer = new HeartbeatConsumer(new ObjectMapper(), state, 15000);
+        ObjectMapper json = new ObjectMapper();
+        HeartbeatConsumer consumer = new HeartbeatConsumer(json, state, 15000);
+        DeadLetterConsumer deadLetters = new DeadLetterConsumer(new DeadLetterHandler(json, state));
         try {
             consumer.start(MqConfig.BROKER_URL);
         } catch (MessagingUnavailable e) {
             log.warn("Could not start heartbeat consumer: {}", e.getMessage());
         }
+        try {
+            deadLetters.start(MqConfig.BROKER_URL);
+        } catch (MessagingUnavailable e) {
+            log.warn("Could not start dead-letter watcher: {}", e.getMessage());
+        }
 
         Javalin app = Javalin.create().start(PORT);
-        Runtime.getRuntime().addShutdownHook(new Thread(consumer::close));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            consumer.close();
+            deadLetters.close();
+        }));
 
         app.get("/health", ctx -> ctx.result("OK"));
         app.get("/status", ctx -> ctx.json(state.asMap()));
